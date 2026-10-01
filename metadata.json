@@ -1,0 +1,6 @@
+{
+  "name": "SBS Transit Live Arrival",
+  "description": "Real-time Singapore bus arrival timings, live GPS route tracking, nearby stops, and service alerts by SBS Transit.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
