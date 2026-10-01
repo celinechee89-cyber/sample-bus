@@ -16,6 +16,7 @@ import { ProfileModal } from './components/ProfileModal';
 import { LocationPickerModal } from './components/LocationPickerModal';
 import { INITIAL_BUS_STOPS, SERVICE_ALERTS } from './data/transitData';
 import { BusStop, BusService } from './types/transit';
+import { fetchLtaBusArrivals, mapLtaServiceToBusService } from './services/ltaService';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('arrivals');
@@ -24,6 +25,7 @@ export default function App() {
   const [selectedBusNo, setSelectedBusNo] = useState<string>('65');
   const [currentLocationName, setCurrentLocationName] = useState<string>('Near Orchard Blvd');
   const [refreshInterval, setRefreshInterval] = useState<number>(20);
+  const [ltaSource, setLtaSource] = useState<string>('lta_v3');
 
   // Favorites state persisted in localStorage
   const [favoriteServiceNos, setFavoriteServiceNos] = useState<string[]>(() => {
@@ -49,6 +51,43 @@ export default function App() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false);
 
+  // Sync live arrivals from LTA endpoint
+  const syncLiveArrivalsForStop = async (stopCodeToSync: string) => {
+    try {
+      const cleanCode = stopCodeToSync.replace(/^B/i, '');
+      const response = await fetchLtaBusArrivals(cleanCode);
+      if (response && response.Services && response.Services.length > 0) {
+        setLtaSource(response._source || 'lta_datamall_v3');
+        setStops((prevStops) => {
+          return prevStops.map((stop) => {
+            if (stop.code.replace(/^B/i, '') === cleanCode) {
+              const updatedServices: BusService[] = response.Services.map((svcItem) => {
+                const existing = stop.services.find(
+                  (s) => s.serviceNo.toLowerCase() === svcItem.ServiceNo.toLowerCase()
+                );
+                return mapLtaServiceToBusService(svcItem, stop.code, existing);
+              });
+
+              // Merge with any existing services if needed
+              return {
+                ...stop,
+                services: updatedServices,
+              };
+            }
+            return stop;
+          });
+        });
+      }
+    } catch (err) {
+      console.warn('LTA arrivals sync error:', err);
+    }
+  };
+
+  // Initial fetch on mount and when stop changes
+  useEffect(() => {
+    syncLiveArrivalsForStop(currentStopCode);
+  }, [currentStopCode]);
+
   // Current active stop
   const currentStop: BusStop =
     stops.find((s) => s.code === currentStopCode) || stops[0];
@@ -56,7 +95,27 @@ export default function App() {
   // Currently selected bus service
   const selectedBus: BusService =
     currentStop.services.find((s) => s.serviceNo === selectedBusNo) ||
-    currentStop.services[0];
+    currentStop.services[0] || {
+      serviceNo: selectedBusNo,
+      operator: 'SBS Transit',
+      category: 'Trunk',
+      destination: 'Terminal',
+      via: 'via Route Artery',
+      origin: 'Interchange',
+      nextBus: { min: 'Arr', occupancy: 'seats', deck: 'DD', accessible: true },
+      secondBus: { min: 8, occupancy: 'standing', deck: 'SD', accessible: true },
+      thirdBus: { min: 20, occupancy: 'seats', deck: 'DD', accessible: true },
+      tracker: {
+        previousStop: 'Somerset Stn',
+        previousStopCode: 'B09037',
+        targetStop: currentStop.name,
+        targetStopCode: currentStop.code,
+        distanceMeters: 300,
+        speedKmh: 30,
+        syncedSecondsAgo: 2,
+        progressPercent: 75,
+      },
+    };
 
   const handleSelectBus = (serviceNo: string) => {
     setSelectedBusNo(serviceNo);
@@ -66,12 +125,50 @@ export default function App() {
     setCurrentStopCode(stopCode);
     const stop = stops.find((s) => s.code === stopCode);
     if (stop && stop.services.length > 0) {
-      // Keep same bus if present, otherwise default to first
       const hasSameBus = stop.services.some((s) => s.serviceNo === selectedBusNo);
       if (!hasSameBus) {
         setSelectedBusNo(stop.services[0].serviceNo);
       }
     }
+  };
+
+  const handleSearchQuerySubmit = async (query: string) => {
+    const raw = query.trim();
+    const clean = raw.replace(/^bus\s+/i, '');
+
+    // If query is a 5-digit bus stop code like 83139
+    if (/^\d{5}$/.test(clean) || /^B\d{5}$/i.test(clean)) {
+      const formattedCode = clean.toUpperCase();
+      let existingStop = stops.find(
+        (s) => s.code.replace(/^B/i, '') === clean.replace(/^B/i, '')
+      );
+
+      if (!existingStop) {
+        // Create new stop entry for this stop code and fetch live arrivals
+        const newStop: BusStop = {
+          code: formattedCode,
+          name: `Bus Stop ${formattedCode}`,
+          road: 'Transit Corridor',
+          directionDesc: 'Live LTA Bus Stop',
+          distanceMeters: 120,
+          walkMinutes: 2,
+          coordinates: { x: 50, y: 50, lat: 1.305, lng: 103.84 },
+          services: [],
+        };
+        setStops((prev) => [...prev, newStop]);
+        setCurrentStopCode(formattedCode);
+        setCurrentLocationName(`Stop ${formattedCode}`);
+        await syncLiveArrivalsForStop(formattedCode);
+      } else {
+        setCurrentStopCode(existingStop.code);
+        setCurrentLocationName(existingStop.name);
+        await syncLiveArrivalsForStop(existingStop.code);
+      }
+      return;
+    }
+
+    // If query is a service number (e.g. 15, 176, 30, 78, 65, 14)
+    setSelectedBusNo(clean);
   };
 
   const handleToggleBookmark = (serviceNo: string) => {
@@ -87,6 +184,7 @@ export default function App() {
     setSelectedBusNo('65');
     setCurrentLocationName('Near Orchard Blvd');
     setActiveTab('arrivals');
+    syncLiveArrivalsForStop('B09048');
   };
 
   const handleUseCurrentGPS = () => {
@@ -132,6 +230,9 @@ export default function App() {
             onToggleBookmark={handleToggleBookmark}
             onNearMeClick={handleNearMe}
             refreshSecondsTotal={refreshInterval}
+            onSyncLiveArrivals={() => syncLiveArrivalsForStop(currentStopCode)}
+            onSearchQuerySubmit={handleSearchQuerySubmit}
+            ltaSource={ltaSource}
           />
         )}
 

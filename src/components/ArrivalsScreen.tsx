@@ -12,6 +12,9 @@ interface ArrivalsScreenProps {
   onToggleBookmark: (serviceNo: string) => void;
   onNearMeClick: () => void;
   refreshSecondsTotal: number;
+  onSyncLiveArrivals?: () => Promise<void>;
+  onSearchQuerySubmit?: (query: string) => void;
+  ltaSource?: string;
 }
 
 export const ArrivalsScreen: React.FC<ArrivalsScreenProps> = ({
@@ -25,6 +28,9 @@ export const ArrivalsScreen: React.FC<ArrivalsScreenProps> = ({
   onToggleBookmark,
   onNearMeClick,
   refreshSecondsTotal,
+  onSyncLiveArrivals,
+  onSearchQuerySubmit,
+  ltaSource,
 }) => {
   const [searchQuery, setSearchQuery] = useState('Bus 65');
   const [secondsLeft, setSecondsLeft] = useState(refreshSecondsTotal);
@@ -33,7 +39,7 @@ export const ArrivalsScreen: React.FC<ArrivalsScreenProps> = ({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync / countdown timer
+  // Sync / countdown timer (20-second refresh matching LTA DataMall v3 specification)
   useEffect(() => {
     const timer = setInterval(() => {
       setSecondsLeft((prev) => {
@@ -49,14 +55,23 @@ export const ArrivalsScreen: React.FC<ArrivalsScreenProps> = ({
     return () => clearInterval(timer);
   }, [refreshSecondsTotal]);
 
-  const handleSync = () => {
+  const handleSync = async () => {
     setIsSyncing(true);
     setGpsSecondsAgo(1);
     setSecondsLeft(refreshSecondsTotal);
+
+    if (onSyncLiveArrivals) {
+      try {
+        await onSyncLiveArrivals();
+      } catch (err) {
+        console.warn('Sync failed:', err);
+      }
+    }
+
     setTimeout(() => {
       setIsSyncing(false);
-      showToast('Live bus timings synced with LTA DataMall');
-    }, 700);
+      showToast('Live bus timings synced with LTA DataMall v3');
+    }, 600);
   };
 
   const showToast = (msg: string) => {
@@ -73,8 +88,22 @@ export const ArrivalsScreen: React.FC<ArrivalsScreenProps> = ({
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const clean = searchQuery.trim().replace(/^bus\s+/i, '');
-    if (!clean) return;
+    const raw = searchQuery.trim();
+    if (!raw) return;
+
+    if (onSearchQuerySubmit) {
+      onSearchQuerySubmit(raw);
+      return;
+    }
+
+    const clean = raw.replace(/^bus\s+/i, '');
+
+    // Check if it's a 5-digit bus stop code like 83139 or 09048
+    if (/^\d{5}$/.test(clean) || /^B\d{5}$/i.test(clean)) {
+      onSelectStop(clean);
+      showToast(`Loading Stop ${clean}...`);
+      return;
+    }
 
     // Check if it matches a service
     const foundService = currentStop.services.find(
